@@ -120,13 +120,12 @@ class Extractor(object):
             df   = self.get_collection_df(coll, keywords)
 
             if len(df) > 0:
-                print(f'Found Results for {bill_type.upper()}')
 
                 self.update_unique_packages(df, bills_lyr)
 
                 out_df = df.merge(state_df, left_on='state', right_on='STATE_ABBR')
                 bill_dfs.append(out_df)
 
-        # print('Publishing Bills Feature Layer')
-        # pub_df = pd.concat(bill_dfs)
-        # pub_df.spatial.to_featurelayer(f'Keyword_Bills', gis=self.gis)
+        print('Publishing Bills Feature Layer')
+        pub_df = pd.concat(bill_dfs)
+        pub_df.spatial.to_featurelayer(f'Keyword_Bills', gis=self.gis)
