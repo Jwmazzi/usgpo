@@ -56,7 +56,7 @@ class Extractor(object):
 
         return response.json()
 
-    def process_package(self, package_link):
+    def process_package(self, package_link, keyword):
 
         api_key = self.config["api_key"]
 
@@ -73,33 +73,42 @@ class Extractor(object):
                 'link': f"{data['download']['pdfLink']}?api_key={api_key}",
                 'title': data['title'],
                 'package_id': data['packageId'],
-                'bill_number': data['billNumber']
+                'bill_number': data['billNumber'],
+                'keyword': keyword
             })
 
         return member_list
 
-    def get_collection_df(self, collection, keywords):
+    def get_collection_df(self, collection, category, keywords):
 
         data = []
         for p in collection.get('packages'):
-            if any([k in p.get('title').lower() for k in keywords]):
-                members = self.process_package(p.get('packageLink'))
-                for member in members:
-                    data.append(member)
+            for keyword in [k.lower() for k in keywords]:
+                if keyword in p.get('title').lower():
+                    members = self.process_package(p.get('packageLink'), keyword)
+                    for member in members:
+                        data.append(member)
 
         df = pd.DataFrame(data)
 
+        df['category'] = category
+
         return df
 
-    def update_unique_packages(self, df, lyr):
+    def fetch_terms(self):
 
-        for id in df['package_id'].unique():
-            update_df = df[df['package_id'] == id]
-            first_feature = update_df.spatial.to_featureset().features[0]
-            lyr.edit_features(adds=[first_feature])
+        category_itm = self.gis.content.get(self.config['categ_id'])
+        category_fs  = category_itm.tables[0].query().features
+        keyword_fs   = category_itm.tables[1].query().features
 
+        categories = {k: [] for k in [c.attributes['category'] for c in category_fs]}
 
-    def fetch_bills(self, keywords, past_days=7):
+        for feature in keyword_fs:
+            categories[feature.attributes['category']].append(feature.attributes['keyword'])
+
+        return categories
+
+    def fetch_bills(self, past_days=7):
 
         self.get_gis()
 
@@ -111,21 +120,29 @@ class Extractor(object):
         bills_lyr = bills_itm.tables[0]
         bills_lyr.delete_features(where='1=1')
 
+        term_dictionary = self.fetch_terms()
+
         bill_dfs = []
+        bill_ids = []
 
-        for bill_type in bill_types:
+        for category, keywords in term_dictionary.items():
+            for bill_type in bill_types:
 
-            past = self.get_past_time(past_days)
-            coll = self.get_collection('BILLS', past, bill_type)
-            df   = self.get_collection_df(coll, keywords)
+                past = self.get_past_time(past_days)
+                coll = self.get_collection('BILLS', past, bill_type)
+                df   = self.get_collection_df(coll, category, keywords)
 
-            if len(df) > 0:
+                if len(df) > 0:
 
-                self.update_unique_packages(df, bills_lyr)
+                    for bill_number in df['bill_number'].unique():
+                        if bill_number not in bill_ids:
+                            first_unique = df[df['bill_number'] == bill_number].spatial.to_featureset().features[0]
+                            bills_lyr.edit_features(adds=[first_unique])
+                            bill_ids.append(bill_number)
 
-                out_df = df.merge(state_df, left_on='state', right_on='STATE_ABBR')
-                bill_dfs.append(out_df)
+                    out_df = df.merge(state_df, left_on='state', right_on='STATE_ABBR')
+                    bill_dfs.append(out_df)
 
         print('Publishing Bills Feature Layer')
         pub_df = pd.concat(bill_dfs)
-        pub_df.spatial.to_featurelayer(f'Keyword_Bills', gis=self.gis)
+        pub_df.spatial.to_featurelayer(f'Member_Support', gis=self.gis)
