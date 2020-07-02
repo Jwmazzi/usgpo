@@ -8,4 +8,4 @@ if __name__ == "__main__":
     config   = os.path.join(this_dir, 'config.json')
 
     e = Extractor(config)
-    e.fetch_bills(14)
+    e.fetch_bills(365)

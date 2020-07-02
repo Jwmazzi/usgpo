@@ -56,7 +56,7 @@ class Extractor(object):
 
         return response.json()
 
-    def process_package(self, package_link, keyword):
+    def process_package(self, package, keyword):
 
         api_key = self.config["api_key"]
 
@@ -64,17 +64,19 @@ class Extractor(object):
             'api_key': api_key
         }
 
-        response = requests.get(package_link, params=payload)
+        response = requests.get(package.get('packageLink'), params=payload)
         data = response.json()
 
         member_list = data['members']
+
         for member in member_list:
             member.update({
                 'link': f"{data['download']['pdfLink']}?api_key={api_key}",
                 'title': data['title'],
                 'package_id': data['packageId'],
                 'bill_number': data['billNumber'],
-                'keyword': keyword
+                'keyword': keyword,
+                'dateIssued': package['dateIssued']
             })
 
         return member_list
@@ -83,14 +85,21 @@ class Extractor(object):
 
         data = []
         for p in collection.get('packages'):
-            for keyword in [k.lower() for k in keywords]:
-                if keyword in p.get('title').lower():
-                    members = self.process_package(p.get('packageLink'), keyword)
-                    for member in members:
-                        data.append(member)
+            try:
+                for keyword in [k.lower() for k in keywords]:
+                    if keyword in p.get('title').lower():
+                        members = self.process_package(p, keyword)
+                        for member in members:
+                            data.append(member)
+            except KeyError:
+                print(f'Ignoring: {p}')
+
+        if not data:
+            return pd.DataFrame()
 
         df = pd.DataFrame(data)
 
+        df['title'] = df['title'].apply(lambda x: f'{x[:250]}')
         df['category'] = category
 
         return df
@@ -120,6 +129,10 @@ class Extractor(object):
         bills_lyr = bills_itm.tables[0]
         bills_lyr.delete_features(where='1=1')
 
+        membs_itm = self.gis.content.get(self.config["membs_id"])
+        membs_lyr = membs_itm.layers[0]
+        membs_lyr.delete_features(where='1=1')
+
         term_dictionary = self.fetch_terms()
 
         bill_dfs = []
@@ -133,16 +146,18 @@ class Extractor(object):
                 df   = self.get_collection_df(coll, category, keywords)
 
                 if len(df) > 0:
-
                     for bill_number in df['bill_number'].unique():
                         if bill_number not in bill_ids:
-                            first_unique = df[df['bill_number'] == bill_number].spatial.to_featureset().features[0]
-                            bills_lyr.edit_features(adds=[first_unique])
+                            bills = df[df['bill_number'] == bill_number]
+                            first_sponsor = bills[bills['role'] == 'SPONSOR'].spatial.to_featureset().features[0]
+                            bills_lyr.edit_features(adds=[first_sponsor])
                             bill_ids.append(bill_number)
 
                     out_df = df.merge(state_df, left_on='state', right_on='STATE_ABBR')
                     bill_dfs.append(out_df)
 
-        print('Publishing Bills Feature Layer')
         pub_df = pd.concat(bill_dfs)
-        pub_df.spatial.to_featurelayer(f'Member_Support', gis=self.gis)
+        for feature in pub_df.spatial.to_featureset():
+            resp = membs_lyr.edit_features(adds=[feature])
+            if not resp['addResults'][0]['success']:
+                print(resp)
