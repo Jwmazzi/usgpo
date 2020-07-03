@@ -4,7 +4,7 @@ from arcgis.features import GeoAccessor
 from arcgis.gis import GIS
 
 from datetime import datetime, timedelta
-from itertools import chain
+import xml.etree.ElementTree as et
 import pandas as pd
 import requests
 import json
@@ -71,27 +71,36 @@ class Extractor(object):
 
         return packages
 
+    def get_status(self, status_link):
+
+        """ Return Most Recent Action for Input Bill Link """
+
+        r = requests.get(status_link, params={'api_key': self.config["api_key"]})
+
+        e = et.fromstring(r.content)
+        l = next(e.iter('latestAction'))
+
+        return next(l.iter('text')).text
+
     def process_package(self, package, keyword):
 
         api_key = self.config["api_key"]
 
-        payload = {
-            'api_key': api_key
-        }
+        r = requests.get(package.get('packageLink'), params={'api_key': api_key}).json()
 
-        response = requests.get(package.get('packageLink'), params=payload)
-        data = response.json()
-
-        member_list = data['members']
+        member_list = r.get('members', [])
 
         for member in member_list:
             member.update({
-                'link': f"{data['download']['pdfLink']}?api_key={api_key}",
-                'title': data['title'],
-                'package_id': data['packageId'],
-                'bill_number': data['billNumber'],
+                'link': f"{r['download']['pdfLink']}?api_key={api_key}",
+                'title': r['title'],
+                'package_id': r['packageId'],
+                'bill_number': r['billNumber'],
                 'keyword': keyword,
-                'dateIssued': package['dateIssued']
+                'dateIssued': package['dateIssued'],
+                'committees': ', '.join([c['committeeName'] for c in r.get('committees', [])]),
+                'other_title': ', '.join([c['title'] for c in r.get('shortTitle', [])]),
+                'last_action': self.get_status(r['related']['billStatusLink'])
             })
 
         return member_list
@@ -107,8 +116,8 @@ class Extractor(object):
                         members = self.process_package(package, keyword)
                         for member in members:
                             data.append(member)
-            except KeyError:
-                print(f'Ignoring: {package}')
+            except KeyError as key_err:
+                print(f'Dropped Record Expecting Key: {key_err}')
 
         if not data:
             return pd.DataFrame()
@@ -155,29 +164,30 @@ class Extractor(object):
         bill_ids = []
 
         for category, keywords in term_dictionary.items():
-            for bill_type in bill_types:
+            for bill_type, bill_desc in bill_types.items():
 
                 past_time  = self.get_past_time(past_days)
                 collection = self.get_collection('BILLS', past_time, bill_type)
-                df   = self.get_collection_df(collection, category, keywords)
+                coll_df    = self.get_collection_df(collection, category, keywords)
 
-                if len(df) > 0:
-                    print(f'Found {len(df)} {category} for {bill_type}')
-                    for bill_number in df['bill_number'].unique():
+                if len(coll_df) > 0:
+
+                    coll_df['bill_type'] = bill_desc
+
+                    for bill_number in coll_df['bill_number'].unique():
                         if bill_number not in bill_ids:
                             try:
-                                bills = df[df['bill_number'] == bill_number]
-                                first_sponsor = bills[bills['role'] == 'SPONSOR'].spatial.to_featureset().features[0]
-                                bills_lyr.edit_features(adds=[first_sponsor])
-                                bill_ids.append(bill_number)
-                            except:
-                                print(f'Dropped: {bill_number}')
+                                bills = coll_df[coll_df['bill_number'] == bill_number]
+                                sponsor = bills[bills['role'] == 'SPONSOR'].spatial.to_featureset().features[0]
+                                bills_lyr.edit_features(adds=[sponsor])
+                            except IndexError:
+                                print(f'Expected Sponsor Missing: {bill_number}')
 
-                    out_df = df.merge(state_df, left_on='state', right_on='STATE_ABBR')
+                    out_df = coll_df.merge(state_df, left_on='state', right_on='STATE_ABBR')
                     bill_dfs.append(out_df)
 
         pub_df = pd.concat(bill_dfs)
         for feature in pub_df.spatial.to_featureset():
             resp = membs_lyr.edit_features(adds=[feature])
             if not resp['addResults'][0]['success']:
-                print(resp)
+                print(f'Dropped: {resp}')
