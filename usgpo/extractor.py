@@ -8,6 +8,7 @@ import xml.etree.ElementTree as et
 import pandas as pd
 import requests
 import json
+import time
 import sys
 
 
@@ -36,7 +37,7 @@ class Extractor(object):
 
         return iso_time
 
-    def get_gis(self):
+    def set_gis(self):
 
         self.gis = GIS(
             self.config["esri_url"],
@@ -73,12 +74,12 @@ class Extractor(object):
 
     def get_status(self, status_link):
 
-        """ Return Most Recent Action for Input Bill Link """
-
         r = requests.get(status_link, params={'api_key': self.config["api_key"]})
 
         e = et.fromstring(r.content)
         l = next(e.iter('latestAction'))
+
+        # TODO - Fetch Latest Action Date
 
         return next(l.iter('text')).text
 
@@ -89,6 +90,9 @@ class Extractor(object):
         r = requests.get(package.get('packageLink'), params={'api_key': api_key}).json()
 
         member_list = r.get('members', [])
+
+        # TODO - Alter Get Status to Return All Relevant Info
+        #      - Might Need to Be Outisde of this Fucntion to Support Keyword Searching
 
         for member in member_list:
             member.update({
@@ -142,25 +146,12 @@ class Extractor(object):
 
         return categories
 
-    def fetch_bills(self, past_days=7):
+    def fetch_bills(self, term_dictionary, past_days=60):
 
-        self.get_gis()
-
-        state_itm = self.gis.content.get(self.config["state_id"])
-        state_lyr = state_itm.layers[0]
-        state_df  = state_lyr.query(out_fields=['STATE_NAME', 'STATE_ABBR']).sdf
-
-        bills_itm = self.gis.content.get(self.config["bills_id"])
-        bills_lyr = bills_itm.tables[0]
-        bills_lyr.delete_features(where='1=1')
-
-        membs_itm = self.gis.content.get(self.config["membs_id"])
-        membs_lyr = membs_itm.layers[0]
-        membs_lyr.delete_features(where='1=1')
-
-        term_dictionary = self.fetch_terms()
+        print(f'Fetching Bill Data for {len(term_dictionary.keys())} Categories')
 
         bill_dfs = []
+        bill_fts = []
         bill_ids = []
 
         for category, keywords in term_dictionary.items():
@@ -168,26 +159,56 @@ class Extractor(object):
 
                 past_time  = self.get_past_time(past_days)
                 collection = self.get_collection('BILLS', past_time, bill_type)
-                coll_df    = self.get_collection_df(collection, category, keywords)
+                collect_df = self.get_collection_df(collection, category, keywords)
 
-                if len(coll_df) > 0:
+                if len(collect_df) > 0:
 
-                    coll_df['bill_type'] = bill_desc
+                    collect_df['bill_type'] = bill_desc
 
-                    for bill_number in coll_df['bill_number'].unique():
+                    for bill_number in collect_df['bill_number'].unique():
                         if bill_number not in bill_ids:
-                            try:
-                                bills = coll_df[coll_df['bill_number'] == bill_number]
-                                sponsor = bills[bills['role'] == 'SPONSOR'].spatial.to_featureset().features[0]
-                                bills_lyr.edit_features(adds=[sponsor])
-                            except IndexError:
-                                print(f'Expected Sponsor Missing: {bill_number}')
+                            bills   = collect_df[collect_df['bill_number'] == bill_number]
+                            sponsor = bills[bills['role'] == 'SPONSOR'].spatial.to_featureset().features
+                            if len(sponsor) == 1:
+                                bill_fts.append(sponsor[0])
 
-                    out_df = coll_df.merge(state_df, left_on='state', right_on='STATE_ABBR')
-                    bill_dfs.append(out_df)
+                    bill_dfs.append(collect_df)
 
-        pub_df = pd.concat(bill_dfs)
-        for feature in pub_df.spatial.to_featureset():
-            resp = membs_lyr.edit_features(adds=[feature])
-            if not resp['addResults'][0]['success']:
-                print(f'Dropped: {resp}')
+        return bill_dfs, bill_fts
+
+    def process_edits(self, bills_df, bills_fs):
+
+        print('Pushing Edits')
+
+        bills_itm = self.gis.content.get(self.config["bills_id"])
+        bills_lyr = bills_itm.tables[0]
+        bills_lyr.delete_features(where='1=1')
+
+        response = bills_lyr.edit_features(adds=bills_fs)
+        print(f'Processed {len([e for e in response["addResults"] if e])} Bill Edits')
+
+        membs_itm = self.gis.content.get(self.config["membs_id"])
+        membs_lyr = membs_itm.layers[0]
+        membs_lyr.delete_features(where='1=1')
+
+        state_itm = self.gis.content.get(self.config["state_id"])
+        state_lyr = state_itm.layers[0]
+        state_df  = state_lyr.query(out_fields=['STATE_NAME', 'STATE_ABBR']).sdf
+
+        concat_df = pd.concat(bills_df)
+        member_df = concat_df.merge(state_df, left_on='state', right_on='STATE_ABBR')
+        respponse = membs_lyr.edit_features(adds=member_df.spatial.to_featureset())
+        print(f'Processed {len([e for e in respponse["addResults"] if e])} Member Edits')
+
+    def run_solution(self):
+
+        start = time.time()
+
+        self.set_gis()
+
+        term_dictionary  = self.fetch_terms()
+        bill_df, bill_fs = self.fetch_bills(term_dictionary)
+
+        self.process_edits(bill_df, bill_fs)
+
+        print(f'Process Ran in {round((time.time() - start) / 60, 2)} Minutes')
