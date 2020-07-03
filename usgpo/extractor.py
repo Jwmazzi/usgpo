@@ -77,11 +77,12 @@ class Extractor(object):
         r = requests.get(status_link, params={'api_key': self.config["api_key"]})
 
         e = et.fromstring(r.content)
-        l = next(e.iter('latestAction'))
 
-        # TODO - Fetch Latest Action Date
+        latest = next(e.iter('latestAction'))
+        action = next(latest.iter('text')).text
+        date   = next(latest.iter('actionDate')).text
 
-        return next(l.iter('text')).text
+        return action, date
 
     def process_package(self, package, keyword):
 
@@ -91,8 +92,7 @@ class Extractor(object):
 
         member_list = r.get('members', [])
 
-        # TODO - Alter Get Status to Return All Relevant Info
-        #      - Might Need to Be Outisde of this Fucntion to Support Keyword Searching
+        latest_action, latest_date = self.get_status(r['related']['billStatusLink'])
 
         for member in member_list:
             member.update({
@@ -104,7 +104,8 @@ class Extractor(object):
                 'dateIssued': package['dateIssued'],
                 'committees': ', '.join([c['committeeName'] for c in r.get('committees', [])]),
                 'other_title': ', '.join([c['title'] for c in r.get('shortTitle', [])]),
-                'last_action': self.get_status(r['related']['billStatusLink'])
+                'last_action': latest_action,
+                'last_date': latest_date
             })
 
         return member_list
@@ -128,6 +129,7 @@ class Extractor(object):
 
         df = pd.DataFrame(data)
 
+        df['last_date'] = pd.to_datetime(df['last_date'])
         df['title'] = df['title'].apply(lambda x: f'{x[:250]}')
         df['category'] = category
 
