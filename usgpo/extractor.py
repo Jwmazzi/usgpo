@@ -37,6 +37,12 @@ class Extractor(object):
 
         return iso_time
 
+    @staticmethod
+    def batches(l, n):
+
+        for i in range(0, len(l), n):
+            yield l[i:i + n]
+
     def set_gis(self):
 
         self.gis = GIS(
@@ -72,17 +78,22 @@ class Extractor(object):
 
         return packages
 
-    def get_status(self, status_link):
+    def process_status(self, status_link):
 
-        r = requests.get(status_link, params={'api_key': self.config["api_key"]})
+        resp = requests.get(status_link, params={'api_key': self.config["api_key"]})
+        root = et.fromstring(resp.content)
 
-        e = et.fromstring(r.content)
+        subjects = next(next(next(root.iter('subjects')).iter('billSubjects')).iter('legislativeSubjects'))
+        latest   = next(root.iter('latestAction'))
 
-        latest = next(e.iter('latestAction'))
-        action = next(latest.iter('text')).text
-        date   = next(latest.iter('actionDate')).text
+        policy   = next(root.iter('policyArea'))
+        policy   = policy[0].text if len(policy) == 1 else None
 
-        return action, date
+        sub_list = ', '.join([i[0].text for i in subjects.iter('item')])
+        action   = next(latest.iter('text')).text
+        date     = next(latest.iter('actionDate')).text
+
+        return [sub_list, policy, action, date]
 
     def process_package(self, package, keyword):
 
@@ -92,18 +103,20 @@ class Extractor(object):
 
         member_list = r.get('members', [])
 
-        latest_action, latest_date = self.get_status(r['related']['billStatusLink'])
+        subject_list, policy, latest_action, latest_date = self.process_status(r['related']['billStatusLink'])
 
         for member in member_list:
             member.update({
                 'link': f"{r['download']['pdfLink']}?api_key={api_key}",
-                'title': r['title'],
+                'title': r['title'][:999],
                 'package_id': r['packageId'],
                 'bill_number': r['billNumber'],
                 'keyword': keyword,
                 'dateIssued': package['dateIssued'],
-                'committees': ', '.join([c['committeeName'] for c in r.get('committees', [])]),
-                'other_title': ', '.join([c['title'] for c in r.get('shortTitle', [])]),
+                'committees': ', '.join([c['committeeName'] for c in r.get('committees', [])])[:999],
+                'other_title': ', '.join([c['title'] for c in r.get('shortTitle', [])])[:999],
+                'subjects':  subject_list[:999],
+                'policy_area': policy,
                 'last_action': latest_action,
                 'last_date': latest_date
             })
@@ -148,7 +161,7 @@ class Extractor(object):
 
         return categories
 
-    def fetch_bills(self, term_dictionary, past_days=60):
+    def fetch_bills(self, term_dictionary, past_days):
 
         print(f'Fetching Bill Data for {len(term_dictionary.keys())} Categories')
 
@@ -186,8 +199,11 @@ class Extractor(object):
         bills_lyr = bills_itm.tables[0]
         bills_lyr.delete_features(where='1=1')
 
-        response = bills_lyr.edit_features(adds=bills_fs)
-        print(f'Processed {len([e for e in response["addResults"] if e])} Bill Edits')
+        print('Pushing Bill Edits')
+        for bill in bills_fs:
+            response = bills_lyr.edit_features(adds=[bill])['addResults'][0]
+            if not response['success']:
+                print(f'Edit Failed: {response}')
 
         membs_itm = self.gis.content.get(self.config["membs_id"])
         membs_lyr = membs_itm.layers[0]
@@ -199,17 +215,21 @@ class Extractor(object):
 
         concat_df = pd.concat(bills_df)
         member_df = concat_df.merge(state_df, left_on='state', right_on='STATE_ABBR')
-        respponse = membs_lyr.edit_features(adds=member_df.spatial.to_featureset())
-        print(f'Processed {len([e for e in respponse["addResults"] if e])} Member Edits')
 
-    def run_solution(self):
+        print('Pushing Member Edits')
+        for feature in member_df.spatial.to_featureset().features:
+            response = membs_lyr.edit_features(adds=[feature])['addResults'][0]
+            if not response['success']:
+                print(f'Edit Failed: {response}')
+
+    def run_solution(self, past_days=30):
 
         start = time.time()
 
         self.set_gis()
 
         term_dictionary  = self.fetch_terms()
-        bill_df, bill_fs = self.fetch_bills(term_dictionary)
+        bill_df, bill_fs = self.fetch_bills(term_dictionary, past_days)
 
         self.process_edits(bill_df, bill_fs)
 
