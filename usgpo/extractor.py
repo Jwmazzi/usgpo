@@ -105,7 +105,6 @@ class Extractor(object):
             'state': sponsor_element.find('state').text
         }
 
-
     def process_bill_status(self, status_link):
 
         # TODO - Replace Next with Find Throughout This Function
@@ -258,7 +257,11 @@ class Extractor(object):
 
         bill_df, bill_fs = self.fetch_bills(past_days)
 
-        self.process_edits(bill_df, bill_fs)
+        for bill in bill_df:
+            print(len(bill))
+            print(bill_df[0].iloc[0])
+
+        # self.process_edits(bill_df, bill_fs)
 
         print(f'Process Ran in {round((time.time() - start) / 60, 2)} Minutes')
 
