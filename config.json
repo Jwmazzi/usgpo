@@ -1,10 +1,10 @@
 {
   "api_url":  "https://api.govinfo.gov/collections",
-  "api_key":  "",
-  "esri_url": "",
-  "username": "",
-  "password": "",
+  "api_key":  " ",
+  "esri_url": " ",
+  "username": " ",
+  "password": " ",
   "state_id": "99fd67933e754a1181cc755146be21ca",
-  "membs_id": "",
+  "membs_id": " ",
   "congress": 116
 }
