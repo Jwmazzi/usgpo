@@ -7,10 +7,14 @@ from datetime import datetime, timedelta
 import xml.etree.ElementTree as et
 from itertools import chain
 import pandas as pd
+import traceback
 import requests
 import json
 import time
 import sys
+
+import warnings
+warnings.filterwarnings("ignore")
 
 
 class Extractor(object):
@@ -43,6 +47,35 @@ class Extractor(object):
 
         for i in range(0, len(l), n):
             yield l[i:i + n]
+
+    @staticmethod
+    def process_feature_edits(feature_list, feature_layer, operation):
+
+        pushed = 0
+
+        for feature in feature_list:
+
+            try:
+
+                edit_feature = {
+                    'geometry': feature['SHAPE'],
+                    'attributes': feature
+                }
+
+                if operation == 'update':
+                    response = feature_layer.edit_features(updates=[edit_feature])['updateResults']
+                else:
+                    response = feature_layer.edit_features(adds=[edit_feature])['addResults']
+
+                if not response[0]['success']:
+                    print(response)
+                else:
+                    pushed += 1
+
+            except:
+                print(traceback.format_exc())
+
+        print(f'Processed {pushed} of {len(feature_list)} {operation.upper()}')
 
     def set_gis(self):
 
@@ -87,7 +120,8 @@ class Extractor(object):
             'full_name': sponsor_element.find('fullName').text,
             'original_cosponsor': sponsor_element.find('isOriginalCosponsor').text,
             'sponsor_date': sponsor_element.find('sponsorshipDate').text,
-            'bio_id': f'https://bioguideretro.congress.gov/Home/MemberDetails?memIndex={sponsor_element.find("bioguideId").text}',
+            'bio_link': f'https://bioguideretro.congress.gov/Home/MemberDetails?memIndex={sponsor_element.find("bioguideId").text}',
+            'bio_id': sponsor_element.find("bioguideId").text,
             'party': sponsor_element.find('party').text,
             'state': sponsor_element.find('state').text
         }
@@ -100,7 +134,8 @@ class Extractor(object):
             'full_name': sponsor_element.find('fullName').text,
             'original_cosponsor': 'True',
             'sponsor_date': introduced_date,
-            'bio_id': f'https://bioguideretro.congress.gov/Home/MemberDetails?memIndex={sponsor_element.find("bioguideId").text}',
+            'bio_link': f'https://bioguideretro.congress.gov/Home/MemberDetails?memIndex={sponsor_element.find("bioguideId").text}',
+            'bio_id': sponsor_element.find("bioguideId").text,
             'party': sponsor_element.find('party').text,
             'state': sponsor_element.find('state').text
         }
@@ -171,93 +206,112 @@ class Extractor(object):
         data = []
 
         for package in collection:
+            try:
+                r = requests.get(package.get('packageLink'), params={'api_key': self.config['api_key']}).json()
 
-            r = requests.get(package.get('packageLink'), params={'api_key': self.config['api_key']}).json()
+                sponsor_list = self.process_bill_status(r['related']['billStatusLink'])
+                sponsor_list = self.process_package(package, sponsor_list)
 
-            sponsor_list = self.process_bill_status(r['related']['billStatusLink'])
-            sponsor_list = self.process_package(package, sponsor_list)
+                data.append(sponsor_list)
 
-            data.append(sponsor_list)
+            # TODO - Why Do Some Entries Lack the Related Bill Status Link Attribute?
+            except KeyError as key_err:
+                print(f'Skipping Package: {package} Based on Key Error: {key_err}')
 
         if not data:
-            return pd.DataFrame()
-        else:
-            data = list(chain(*data))
+            return None
 
-        df = pd.DataFrame(data)
+        df = pd.DataFrame(list(chain(*data)))
 
         df['sponsor_date'] = pd.to_datetime(df['sponsor_date'])
-        df['date_issued'] = pd.to_datetime(df['date_issued'])
-        df['last_date'] = pd.to_datetime(df['last_date'])
+        df['date_issued']  = pd.to_datetime(df['date_issued'])
+        df['last_date']    = pd.to_datetime(df['last_date'])
+
+        df['unique_id'] = df['bio_id'] + df['package_id']
 
         return df
 
     def fetch_bills(self, past_days):
 
         bill_dfs = []
-        bill_fts = []
-        bill_ids = []
+
+        past_time = self.get_past_time(past_days)
+        past_ts   = pd.to_datetime(past_time).replace(hour=0, minute=0, second=0, tzinfo=None)
 
         for bill_type, bill_desc in bill_types.items():
 
-            past_time  = self.get_past_time(past_days)
             collection = self.get_collection('BILLS', past_time, bill_type)
             collect_df = self.get_collection_df(collection)
 
-            if len(collect_df) > 0:
+            if isinstance(collect_df, pd.DataFrame):
+                collect_df = collect_df[collect_df.last_date >= past_ts]
+                if len(collect_df) > 0:
+                    print(f'Found {len(collect_df)} {bill_desc} Entries')
+                    collect_df['bill_type'] = bill_desc
+                    bill_dfs.append(collect_df)
 
-                collect_df['bill_type'] = bill_desc
+        return pd.concat(bill_dfs)
 
-                for bill_number in collect_df['bill_number'].unique():
-                    if bill_number not in bill_ids:
-                        bills   = collect_df[collect_df['bill_number'] == bill_number]
-                        bill_fts.append(bills.spatial.to_featureset().features[0])
+    def handle_updates(self, edit_lyr, old_sdf, new_sdf, id_field):
 
-                bill_dfs.append(collect_df)
+        if not len(old_sdf):
+            self.process_feature_edits(old_sdf.to_dict('records'), edit_lyr, 'add')
 
-        return bill_dfs, bill_fts
+        else:
+            merged = old_sdf.merge(new_sdf, on=id_field, how='outer', indicator=True)
+            add_df = merged[merged['_merge'] == 'right_only']
+            upd_df = merged[merged['_merge'] == 'both']
 
-    def process_edits(self, bills_df, bills_fs):
+            adds = add_df[[c for c in add_df.columns if not c.endswith('_x')]]
+            adds.columns = adds.columns.str.replace('_y', '')
+            adds.drop(columns=['_merge'], inplace=True)
+            upds = upd_df[[c for c in upd_df.columns if not c.endswith('_x')]]
+            upds.columns = upds.columns.str.replace('_y', '')
+            upds.drop(columns=['_merge'], inplace=True)
 
-        bills_itm = self.gis.content.get(self.config["bills_id"])
-        bills_lyr = bills_itm.tables[0]
-        bills_lyr.delete_features(where='1=1')
+            adds.fillna(0, inplace=True)
+            upds.fillna(0, inplace=True)
 
-        print('Pushing Bill Edits')
-        for bill in bills_fs:
-            response = bills_lyr.edit_features(adds=[bill])['addResults'][0]
-            if not response['success']:
-                print(f'Edit Failed: {response}')
+            if len(upds):
+                self.process_feature_edits(upds.to_dict('records'), edit_lyr, 'update')
 
-        membs_itm = self.gis.content.get(self.config["membs_id"])
-        membs_lyr = membs_itm.layers[0]
-        membs_lyr.delete_features(where='1=1')
-
-        state_itm = self.gis.content.get(self.config["state_id"])
-        state_lyr = state_itm.layers[0]
-        state_df  = state_lyr.query(out_fields=['STATE_NAME', 'STATE_ABBR']).sdf
-
-        concat_df = pd.concat(bills_df)
-        member_df = concat_df.merge(state_df, left_on='state', right_on='STATE_ABBR')
-
-        print('Pushing Member Edits')
-        member_sets = self.batches(member_df.spatial.to_featureset().features, 500)
-        for idx, member_set in enumerate(member_sets):
-            try:
-                response = membs_lyr.edit_features(adds=member_set)['addResults']
-                print(f'{len([e for e in response if e["success"]])} Edits Passed')
-            except:
-                print(f'Edit Batch {idx} Failed')
+            if len(adds):
+                self.process_feature_edits(adds.to_dict('records'), edit_lyr, 'add')
 
     def run_solution(self, past_days=30):
 
         start = time.time()
 
-        self.set_gis()
+        try:
+            # Connect to ArcGIS Online
+            self.set_gis()
 
-        bill_df, bill_fs = self.fetch_bills(past_days)
+            # Collect Most Recent Bill Data
+            bills_df = self.fetch_bills(past_days)
 
-        self.process_edits(bill_df, bill_fs)
+            if len(bills_df) == 0:
+                print('Nothing Found in USGPO For Current Search Range.')
+                return
 
-        print(f'Process Ran in {round((time.time() - start) / 60, 2)} Minutes')
+            # Fetch Existing Sponsor Data as a Data Frame
+            sponsor_itm    = self.gis.content.get(self.config["sponsors"])
+            sponsor_lyr    = sponsor_itm.layers[0]
+            old_sponsor_df = sponsor_lyr.query().sdf
+
+            # Fetch State Boundaries as a Data Frame
+            state_itm = self.gis.content.get(self.config["state_id"])
+            state_lyr = state_itm.layers[0]
+            state_df  = state_lyr.query(out_fields=['STATE_NAME', 'STATE_ABBR']).sdf
+
+            # Prepare Newly Fetched Bill Data Frame for Insertion
+            new_sponsor_df = bills_df.merge(state_df, left_on='state', right_on='STATE_ABBR')
+
+            # Push Edits to ArcGIS Online
+            self.handle_updates(sponsor_lyr, old_sponsor_df, new_sponsor_df, 'unique_id')
+
+        except:
+            print(traceback.format_exc())
+
+        finally:
+            print(f'Process Ran in {round((time.time() - start) / 60, 2)} Minutes')
 
