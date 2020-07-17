@@ -7,6 +7,9 @@ be run as a scheduled task, you will find a File Geodatabase (under /schema)  th
 get started. Instructions are posted below if you would like to start tracking/updating bill data in your own 
 Esri organization. Please reach out to the team of you have questions or ideas on how we can make this better. 
 
+An example of what you can build with this extractor can be found in this 
+[Story Map](https://storymaps.arcgis.com/stories/11643240c35f4b77af0008344e73313b). 
+
 ## Getting Started - USGPO
 
 * Publish the Sponsors_Schema.zip file found in the /schema directory to ArcGIS Online as a File Geodatabase. 

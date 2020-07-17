@@ -255,7 +255,7 @@ class Extractor(object):
     def handle_updates(self, edit_lyr, old_sdf, new_sdf, id_field):
 
         if not len(old_sdf):
-            self.process_feature_edits(old_sdf.to_dict('records'), edit_lyr, 'add')
+            self.process_feature_edits(new_sdf.to_dict('records'), edit_lyr, 'add')
 
         else:
             merged = old_sdf.merge(new_sdf, on=id_field, how='outer', indicator=True)
@@ -301,7 +301,7 @@ class Extractor(object):
             # Fetch State Boundaries as a Data Frame
             state_itm = self.gis.content.get(self.config["state_id"])
             state_lyr = state_itm.layers[0]
-            state_df  = state_lyr.query(out_fields=['STATE_NAME', 'STATE_ABBR']).sdf
+            state_df  = state_lyr.query(out_fields=['NAME', 'STATE_ABBR']).sdf
 
             # Prepare Newly Fetched Bill Data Frame for Insertion
             new_sponsor_df = bills_df.merge(state_df, left_on='state', right_on='STATE_ABBR')
