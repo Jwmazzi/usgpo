@@ -250,7 +250,7 @@ class Extractor(object):
                     collect_df['bill_type'] = bill_desc
                     bill_dfs.append(collect_df)
 
-        return pd.concat(bill_dfs)
+        return bill_dfs
 
     def handle_updates(self, edit_lyr, old_sdf, new_sdf, id_field):
 
@@ -287,11 +287,13 @@ class Extractor(object):
             self.set_gis()
 
             # Collect Most Recent Bill Data
-            bills_df = self.fetch_bills(past_days)
+            bills_df_list = self.fetch_bills(past_days)
 
-            if len(bills_df) == 0:
-                print('Nothing Found in USGPO For Current Search Range.')
+            if len(bills_df_list) == 0:
+                print(f'Nothing Found in USGPO For Past {past_days} Day(s).')
                 return
+            else:
+                bills_df = pd.concat(bills_df_list)
 
             # Fetch Existing Sponsor Data as a Data Frame
             sponsor_itm    = self.gis.content.get(self.config["sponsors"])

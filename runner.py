@@ -8,4 +8,4 @@ if __name__ == "__main__":
     config   = os.path.join(this_dir, 'config.json')
 
     # Extract Bills from USGPO for the Past Number of Days
-    Extractor(config).run_solution(3)
+    Extractor(config).run_solution(1)
