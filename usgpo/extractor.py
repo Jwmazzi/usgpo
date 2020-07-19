@@ -278,7 +278,19 @@ class Extractor(object):
             if len(adds):
                 self.process_feature_edits(adds.to_dict('records'), edit_lyr, 'add')
 
-    def run_solution(self, past_days=30):
+    @staticmethod
+    def delete(lyr, df, create_field, oid_field, max_date):
+
+        del_oids = df[df[create_field] < max_date][oid_field].to_list()
+
+        if del_oids:
+            del_list = ','.join([str(i) for i in del_oids])
+            res = lyr.delete_features(del_list)['deleteResults']
+            print(f"Deleted {len([i for i in res if i['success']])} rows")
+        else:
+            print('No Records Found for Deletion')
+
+    def run_solution(self, past_days=1, max_age=14):
 
         start = time.time()
 
@@ -310,6 +322,11 @@ class Extractor(object):
 
             # Push Edits to ArcGIS Online
             self.handle_updates(sponsor_lyr, old_sponsor_df, new_sponsor_df, 'unique_id')
+
+            # Remove Anything Older Than Max Age
+            past_date = (datetime.utcnow() - timedelta(days=max_age))
+            if len(old_sponsor_df):
+                self.delete(sponsor_lyr, old_sponsor_df, 'last_date', sponsor_lyr.properties.objectIdField, past_date)
 
         except:
             print(traceback.format_exc())
